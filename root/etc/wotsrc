@@ -1,0 +1,8 @@
+#==============================================================================
+# Read the README file for all explanations!!!
+# See wotsrc.sample for all possible actions you can take
+#==============================================================================
+
+#config daemon off
+config poll 5
+#config debug off

@@ -1,0 +1,11 @@
+%post
+case "$1" in
+  1)
+    # This is an initial install.
+    systemctl preset wots.service >/dev/null 2>&1 || :
+  ;;
+  2)
+    # This is an upgrade.
+    :
+  ;;
+esac

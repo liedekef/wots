@@ -1,0 +1,2 @@
+Make wots run as a windows service by itself. For now you can use the windows resource toolkit tools for this: instsrv.exe and srvany.exe (see http://support.microsoft.com/kb/137890, also valid for XP and 2003). Some screenshots of the process can be found at http://www.iopus.com/guides/srvany.htm
+Also, program restarting (usefull to eliminate memory leaks) only works when you're a daemon, and this doesn't work in windows (needs to be a service). So see the example restart_service.bat script to restart the service, do this once a day.

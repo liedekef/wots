@@ -1,0 +1,85 @@
+#==============================================================================
+# Read the README file for all explanations!!!
+#==============================================================================
+
+config daemon on
+config poll 5
+config debug off
+#config lsprog c:\wots\ls.exe
+# change this location to where you want the isalive log for wots itself to be
+config isalivelog c:\wots\wots.log
+
+# for sending nsca alerts to a nagios-like server
+config nscapassword helloworld
+# change the nsca port if you want
+# config nscaport 5667
+
+# define some extra variables
+# a variable gets used by putting "~" in front of it
+variable host <SERVERNAME>
+variable service Logfiles
+variable servicenn Not escalating logfiles
+variable nagios <NAGIOSSERVER>
+# the nagios state values
+variable ok 0
+variable warning 1
+variable error 2
+
+
+# the next entry check the functionality of wots (isalivelog) and sends always OK to nagios
+# in nagios, use "freshness" on a service to see if it arrives eg. at least once a day
+# from c:\nagios\wots.log
+from /tmp/wots.log
+/./ sendnsca=~nagios||~host||Logfiles check active||~ok||Wots is working OK
+
+from <LOGPATH>/*/SystemOut.log
+/Application stopped: (.*)/ exec=/usr/lib/nagios/plugins/websphere_app_state.pl $1 stopped /tmp/websphere_app_state.log
+/Application started: (.*)/ exec=/usr/lib/nagios/plugins/websphere_app_state.pl $1 started /tmp/websphere_app_state.log
+
+from <LOGPATH>/*/SystemErr.log
+#if you want to use external send_nsca command:
+#/java.lang.NoClassDefFoundError/ exec=printf "~host\\t~servicenn\\t~warning\\t~L: ~M" |~send_nsca -H ~nagios
+#/Too many open files/  exec=printf "~host\\t~service\\t~warning\\t~L: ~M" |~send_nsca -H ~nagios
+/java.lang.NoClassDefFoundError|Too many open files/ sendnsca=~nagios||~host||~service||~warning||~L: ~M
+
+from <LOGPATH><LOGFILE>
+# echo the file+line
+/mytest/ echo
+# echo matches found
+/myothertest (\d+) (\d+)/ echo=$1 $2
+
+from <LOGPATH><LOGFILE>
+/./ syslog=~M
+
+from <LOGPATH><LOGFILE>
+/ WARN /sendnsca=~nagios||~host||~service||~warning||~L: ~M
+/ ERROR / sendnsca=~nagios||~host||~service||~error||~L: ~M
+
+from <LOGPATH><LOGFILE>
+/ ERROR .* Unable to copy/ sendnsca=~nagios||~host||~service||~error||~L: ~M
+
+from <LOGPATH><LOGFILE>
+# we only want one syslog entry for "BIG ERROR" or "ERROR2"
+/ BIG ERROR | ERROR2 / ignore_rest_file,syslog=~M
+# we want everything else syslogged, but then still continue the rest of pattern matching
+/./ continue,syslog=~M
+/ WARN | DEBUG / ignore
+/ ERROR / sendnsca=~nagios||~host||~service||~error||~L: ~M
+
+from <LOGPATH>`date +%Y%m%d`.audit
+/Read timeout / exec=printf "~host\\t~service\\t~error\\t~L: ~M" |~send_nsca -H ~nagios
+
+from c:\nagios\access.log
+/test/ sendnsca=~nagios||~host||~service||~warning||~L: ~M
+/Application stopped: / sendnsca=~nagios||~host||~service||~critical||~L: ~M
+
+
+# I'm monitoring samhain on a central server but sending the alerts to 
+# each server found, and only one alert per polling period to prevent overflows
+from /var/log/yule/yule.log
+/ remote_host=\"(.*)\" \> \</ sendnsca_oncepermatch=~nagios||$1||~service||~error||~L: ~M
+
+# or, if you want to use an external script
+from /var/log/messages
+/ remote_host=\"(.*)\" \> \</ exec_oncepermatch=$1||/usr/local/bin/send_gearman.sh $1 "Files changed"
+

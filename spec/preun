@@ -1,0 +1,13 @@
+%preun
+case "$1" in
+  0)
+    # This is an un-installation.
+    systemctl --no-reload disable wots.service > /dev/null 2>&1 || :
+    systemctl stop wots.service > /dev/null 2>&1 || :
+  ;;
+  1)
+    # This is an upgrade.
+    # Do nothing.
+    :
+  ;;
+esac

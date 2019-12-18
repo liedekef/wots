@@ -1,0 +1,12 @@
+%postun
+case "$1" in
+  0)
+    # This is an un-installation.
+    systemctl daemon-reload >/dev/null 2>&1 || :
+  ;;
+  1)
+    # This is an upgrade.
+    # we reload too, the service file might've changed
+    systemctl daemon-reload >/dev/null 2>&1 || :
+  ;;
+esac

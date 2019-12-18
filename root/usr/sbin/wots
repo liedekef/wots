@@ -1,0 +1,1092 @@
+#!/usr/bin/env perl
+## -*- perl -*-
+# WOTS - Copyright Tony Curtis <tonyc@uh.edu> 1997-2005
+#
+# There are no restrictions on what you can do with this code.
+# If you want to use it in something that makes money, no problem.
+# The only thing is that I require you to include the copyright line above
+# in its entirety in any code fragments, libraries, or other forms of
+# software which are derived from all or part of the code belonging to
+# WOTS.
+#
+require 5.0;
+
+use strict;
+use warnings 'all';
+no strict qw(refs);
+
+use Getopt::Long;				  # option handler
+use POSIX;					  # useful functions
+use IO::File;					  # stream flushing
+use IO::Socket;
+use Sys::Syslog;
+use Net::Domain qw(hostname hostfqdn hostdomain domainname);
+#use Data::Dumper;
+
+# comment out the next lines if you don't have/want fancy echo or mail.
+# use Mail::Send;
+#use Term::ANSIColor;
+#$Term::ANSIColor::EACHLINE = "\n";
+
+# ----------------------------------------------------------------------------
+
+autoflush STDOUT 1;
+
+# auto-reset highlighting after each output line
+
+use File::Basename;
+my $system_is_windows=0;
+if ($^O =~ /MSWin/i) {
+    $system_is_windows=1;
+}
+   
+if (!$system_is_windows) {
+	eval "use Sys::Syslog";
+}
+
+#my $prog = basename($0);
+my $prog = $0;
+my $VERSION = "VERSION 2.8";
+
+my %options;
+my %commandline_options;
+
+my $def_poll = 5;
+my $def_count = (-1);
+my $def_cfg  = "/etc/wotsrc";
+my $def_isalivelog = "NONE";
+my $def_lsprog;
+if ($system_is_windows) {
+	$def_lsprog = "ls.exe";
+} else {
+	$def_lsprog = "ls";
+}
+my $def_syslogfacility = "user";
+my $def_syslogpriority = "info";
+my $def_mailmethod = "smtp"; # smtp or sendmail, only smtp on windows
+my $def_mailserver = "localhost";
+my $def_restartinterval = 0;
+my $def_logisaliveinterval = 3000;
+my $def_nscapassword = "nagios";
+my $def_nscaport = 5667;
+my $def_pidfile = "/var/run/wots.pid";
+
+my $hup_received=0;
+my (@crc32_table);    # we really don't need this to be global
+# now fill up the @crc32_table array
+# normally this is done in the sendnsca code in the perl script
+# but that would cause it to be done every time the sendnsca handler
+# is called. It is more efficient to call it once at the beginning.
+generate_crc32_table();
+
+# only the --config parameter is required, the rest also read
+# into the hash %commandline_options but the option is first read
+# from the config file and then overriden with the commandline options
+# See get_commandline_options for this
+
+$commandline_options{'config'}=$def_cfg;
+GetOptions(
+		"config=s"  => \$commandline_options{'config'},
+		"debug=s"   => \$commandline_options{'debug'},
+		"count=i"   => \$commandline_options{'count'},
+		"help"      => \$commandline_options{'help'},
+		"version"   => \$commandline_options{'version'},
+		"daemon=s"  => \$commandline_options{'daemon'},
+		"pidfile=s" => \$commandline_options{'pidfile'},
+		"include_old_lines=s"  => \$commandline_options{'include_old_lines'}
+		) ||
+	usage();
+
+#on_off_canonify("debug");
+
+usage() if $commandline_options{help};
+die "$VERSION\n" if $commandline_options{version};
+
+# ----------------------------------------------------------------------------
+
+# state
+my %actions;
+my %fromtypes;
+my %exec_counter;
+my %handles;
+my %last_sizes;
+my %formats;
+my @SOURCES;
+my %children;
+my %global_formats;
+my %custom_variables;
+my %nsca_sent_for_host;
+my %exec_done_for_host;
+
+my ($username, $homedir);
+
+my $fqdn = hostfqdn();
+
+# set things up initially
+init_runtime(1);
+
+# remove the isalivelog, restart from the beginning
+if ($options{'isalivelog'} ne "NONE" && -f $options{'isalivelog'}) {
+	unlink($options{'isalivelog'});
+}
+
+if (!$system_is_windows) {
+	daemonise() if $options{'daemon'}==1;
+}
+# ----------------------------------------------------------------------------
+
+# TODO: check for lock
+if ($options{count} != 1) {
+	my $now = POSIX::strftime("%Y-%m-%d %T", POSIX::localtime(time));
+	print "$prog: $now $VERSION ready (pid $$)\n";
+	if ($options{pidfile}) {
+		# we try to save the PID file, but we don't fail on it
+		open(OUT,">".$options{pidfile});
+		print OUT $$;
+		close OUT;
+	}
+}
+
+# --------------------------------------------------------------------------
+
+# we log a isalive line to a file if wanted (see option isalivelog)
+if ($options{'isalivelog'} ne "NONE") {
+	my @now = POSIX::localtime(time);
+	my $msg = POSIX::strftime("%Y-%m-%d %H:%M:%S WOTS running ok", @now);
+	my $isalivelogfile=$options{'isalivelog'};
+	open (ISALIVEOUT,">>$isalivelogfile") || die "You want a isalive log, but I can't write to it ...\n";
+	print ISALIVEOUT "$msg\n";
+	close ISALIVEOUT;
+}
+
+poller();
+clean_exit();
+
+# --------------------------------------------------------------------------
+
+sub poller {
+	my $pass = 0;
+	my $isalivelogfile=$options{'isalivelog'};
+	my $restartinterval=$options{'restartinterval'};
+	my $logisaliveinterval=$options{'logisaliveinterval'};
+
+	# by default, count=-1, so the loop goes on forever
+	while ($options{'count'} != 0) {
+		tracer("pass", ++$pass);
+		# restart the program each XXX passes if wanted, to cure any possible mem leaks
+		if ($restartinterval > 0 && $pass%$restartinterval == 0 && $options{'count'}<=0 && $options{'daemon'}==1) {
+			# remove the isalivelog, restart from the beginning
+                        if ( -f $isalivelogfile) {
+				unlink($isalivelogfile);
+                        }
+			system("$prog --config=$commandline_options{'config'} --debug=$options{'debug'} --daemon=$options{'daemon'} --pidfile=$options{'pidfile'}");
+			# we do the exit after the next check of lines, so we don't miss any
+			#exit(0);
+		}
+
+		# reread the config when HUP received or every 60 passes
+		if ($hup_received==1) {
+			$hup_received=0;
+			init_runtime(0);
+			if ($restartinterval <= 0) {
+				$pass=0;
+			}
+		} elsif ($pass%60 == 0 && $options{'count'}<=0) {
+			init_runtime(0);
+		}
+
+		if ($logisaliveinterval>0) {
+			if ($pass%$logisaliveinterval == 0) {
+				# we log a isalive line to a file every $logisaliveinterval passes, if wanted (see option isalivelog)
+				if ($options{'isalivelog'} ne "NONE") {
+					my @now = POSIX::localtime(time);
+					my $msg = POSIX::strftime("%Y-%m-%d %H:%M:%S WOTS running ok", @now);
+					open (ISALIVEOUT,">>$isalivelogfile") || die "You want a isalive log, but I can't write to it ...\n";
+					print ISALIVEOUT "$msg\n";
+					close ISALIVEOUT;
+				}
+				if ($options{'count'}<=0 && $restartinterval<=0) {
+					$pass=0;
+				}
+			}
+		} elsif ($pass%60 == 0 && $options{'count'}<=0 && $restartinterval<=0) {
+			$pass=0;
+		}
+
+		map {check_a_source($_)} @SOURCES;
+
+		# now we exit if the restartinterval is ok
+		if ($restartinterval > 0 && $pass%$restartinterval == 0 && $options{'count'}<=0 && $options{'daemon'}==1) {
+			exit(0);
+		}
+
+		tracer("sleep", $options{'poll'});
+		sleep $options{'poll'};
+
+		# now reset any variables that need to be empty for each run
+		tracer("resetting nsca_sent_for_host");
+		%nsca_sent_for_host=();
+		tracer("resetting exec_done_for_host");
+		%exec_done_for_host=();
+
+		--$options{'count'} unless $options{'count'} <= 0;
+	}
+}
+
+# --------------------------------------------------------------------------
+
+sub check_a_source {
+	my ($from) = @_;
+
+	tracer("poll", $from);
+
+	if ($fromtypes{$from} eq 'file') {
+		# this appears to be a bug on FreeBSD
+		# return if eof $handles{$from};
+		my $old_size = $last_sizes{$from};
+		if (-f $from) {
+			my $t_handle= new IO::File "$from";
+			#my $t_handle= new IO::File "$from", O_RDONLY|O_NONBLOCK;
+			my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($t_handle);
+			#my $now=time();
+			#if ($size<$old_size || ($size==$old_size && $now-$mtime<$options{'poll'})) 
+			tracer("size", $size);
+			tracer("oldsize", $old_size);
+			if ($options{'close_and_reopen'}==1) {
+				$handles{$from} = $t_handle;
+				if ($size>=$old_size) {
+					$handles{$from}->seek($old_size,0);
+				}
+			} else {
+				if ($size>=$old_size) {
+					undef($t_handle);
+				} else {
+					delete($handles{$from});
+					$handles{$from} = $t_handle;
+				}
+			}
+
+			my $ignore_rest_file=0;
+			while (my $in = $handles{$from}->getline) {
+				chomp $in;
+				if (!$ignore_rest_file) {
+					$ignore_rest_file=check_a_line($from, $in);
+				}
+			}
+			my $new_size = $handles{$from}->tell();
+			$last_sizes{$from} = $new_size;
+			tracer("newsize", $new_size);
+			if ($options{'close_and_reopen'}==1) {
+				delete($handles{$from});
+			}
+		}
+	} elsif ($fromtypes{$from} eq "cmd" || $fromtypes{$from} eq "once") {
+		++$exec_counter{$from};
+
+		if ($fromtypes{$from} eq "once" && $exec_counter{$from} < 2) {
+			if (open(P, "$from |")) {
+				my $ignore_rest_file=0;
+				while (defined(my $in = <P>)) {
+					chomp $in;
+					if (!$ignore_rest_file) {
+						$ignore_rest_file=check_a_line($from, $in);
+					}
+				}
+				close P;
+			} else {
+				warn "$prog: couldn't run command \`$from'\n";
+			}
+		} else {
+			tracer("won't rerun \`once' command \`$from'");
+		}
+	}
+}
+
+sub check_a_line {
+	my ($from, $line) = @_;
+	my $i;
+	my $return=0;
+
+	foreach my $p (@{$actions{$from}{'patorder'}}) {
+		tracer("match /$p/ ?");
+		next if $line !~ /$p/;
+# TTT: the next lines seem to cause a memleak
+#        # save the numbered matches
+#        my %match;
+#        foreach my $i (1 .. 10) {
+#            eval "\$match{\$i} = \$$i";
+#        }
+		my @match;
+		foreach my $i (1 .. 10) {
+			$match[$i]=$$i if defined $$i;
+		}
+		# look for matches
+		my $continue=0;
+		foreach my $retten (@{$actions{$from}{$p}}) { # a match!
+			$retten =~ s/\\,/\%2C/g;
+			my @tmp_actions = split(/,/, $retten);
+			foreach my $action (@tmp_actions) {
+				my ($ax, $rest) = split(/=/, $action);
+				$action = $ax if defined $rest;
+				my $handler = "handle_$action";
+				# protect arguments from weird quoting
+				if (defined &$handler) {
+					$rest = "" if ! defined $rest;
+					$rest =~ s/\%2C/,/g;
+					tracer("handle", $action);
+					$rest =~ s/\$(\d+)/$match[$1]/g if @match;
+
+					# to get around a windows bug where the exec seems to reset
+					# the filepointer to -4k
+					# we save our position in the file and set it again afterwards
+					#my $my_pos=$handles{$from}->tell();
+					&$handler(qq[$from], qq[$line], qq[$rest]);
+					#$handles{$from}->seek($my_pos,0);
+				} elsif ($action eq "continue") {
+					$continue=1;
+				} elsif ($action eq "ignore_rest_file") {
+					$return=1;
+				} else {
+					tracer("unknown", $action);
+				}
+			}
+		}
+		foreach my $el (0..$#match) {
+			#undef $match[$el];
+			delete $match[$el];
+		}
+		@match=();
+		if (!$continue) {
+			# one pattern match only
+			last;
+		}
+	}
+	return $return;
+}
+# ----------------------------------------------------------------------------
+#
+# handlers for actions
+#
+
+# well, that was difficult
+sub handle_ignore {
+	tracer("ignore");
+	return;
+}
+
+sub handle_exec_oncepermatch {
+	my ($L, $M, $cmd) = @_;
+	my ($hostname,$restcmd)=split(/\|\|/,$cmd);
+        if (!defined($restcmd) || $hostname eq "" || $restcmd eq "") {
+		warn "$prog: exec_oncepermatch definition failure, please use the syntax <HOSTNAME>||<COMMAND>\n";
+        } else {
+		if (!defined($exec_done_for_host{$hostname})) {
+			handle_exec($L,$M,$restcmd);
+			$exec_done_for_host{$hostname}=1;
+		}
+	}
+}
+
+sub handle_exec {
+	my ($L, $M, $cmd) = @_;
+	my $bg = 0;
+	# background command?
+	if ($cmd =~ /\&$/) {
+		$cmd =~ s/\s*\&$//;			  # chop off &
+		$bg = 1;
+	}
+	$cmd = format_unescape($L, $M, "exec", $cmd);
+	tracer("$cmd");
+	my $pid = fork();
+	if (! defined $pid) {			  # error
+		warn "$prog: fork() failed: $!\n";
+	} elsif ($pid == 0) {			  # child becomes command
+		exec $cmd;
+# we should never get here, but in case the exec fails ...
+		warn "exec $cmd failed : $!\n";
+		exit 1;
+	} else {					  # parent
+		if ($bg) {
+			$children{$pid} = $pid;		  # just record it
+		} else {
+			wait;                                 # TODO: !
+		}
+	}
+}
+
+sub handle_echo {
+	my ($L, $M, $style) = @_;
+	tracer($style);
+	$style = join(" ", split(/;/, $style));       # make ANSI ctrl
+	my $msg = format_unescape($L, $M, "echo");
+	if ($style) {
+		#print colored($msg, $style);
+		print $style;
+	} else {
+		print $msg;
+	}
+	print "\n";
+}
+
+sub handle_syslog {
+	my ($L, $M, $style) = @_;
+	my $msg = format_unescape($L, $M, 'syslog', $style);
+	my $ident = $L;
+	$ident =~ s/.*\///g;
+	openlog("$ident","", $options{'syslogfacility'});
+	syslog($options{'syslogpriority'},"$msg");
+	closelog();
+}
+
+# replace logfile/message formatting info
+sub format_unescape {
+	my ($L, $M, $type, $msg) = @_;
+
+	if (! defined $msg || $msg eq "") {
+		$msg = $formats{$type}{$L} || $global_formats{$type};
+	}
+	#my @now = POSIX::localtime(time);
+	#$msg = POSIX::strftime("%Y-%m-%d %H:%M:%S $msg", @now);
+	#$msg = POSIX::strftime($msg, @now);
+	$msg =~ s/\\(.)/ctrlify($1)/ge;
+	$msg =~ s/~FQDN/$fqdn/g;
+	$msg =~ s/~L/$L/g;
+	$msg =~ s/~M/$M/g;
+	foreach my $tvar (keys %custom_variables) {
+		$msg =~ s/~$tvar\b/$custom_variables{$tvar}/g;
+	}
+	$msg;
+}
+
+sub ctrlify {
+	my ($c) = @_;
+	return "\n" if $c eq 'n';
+	return "\r" if $c eq 'r';
+	return "\b" if $c eq 'b';
+	$c;
+}
+
+sub handle_mail {
+	my ($L, $M, $to) = @_;
+
+	$to ||= $username;
+
+	tracer("Sending mail to $to");
+
+	my $m = new Mail::Send (
+			Subject => "FOUND LOG EVENT in $L",
+			To => $to);
+	my $mailconn;
+	if ($options{'mailmethod'} eq 'sendmail') {
+		$mailconn = $m->open('sendmail');
+	} else {
+		$mailconn = $m->open('smtp',$options{'mailserver'});
+	}
+	if ($mailconn) {
+		my $msg = format_unescape($L, $M, "mail");
+		print $mailconn "$msg\n";
+# send it and close connection
+		$mailconn->close;
+		tracer("Sent mail to $to");
+	} else {
+		tracer("Unable to send mail to $to");
+	}
+}
+
+# should this be an echo style?
+sub handle_bell {
+	my ($L, $M) = @_;
+	print "\007";				  # no bell in ANSIColor?
+}
+
+# xor the data (the only type of "encryption" we currently use)
+sub myxor {
+	my ($xor_key, $str) = @_;
+
+        my @byte_iv = split m{}msx, $xor_key;
+
+        # Make a byte array of the password if there is a password
+        my @byte_password = $options{'nscapassword'} ? (split m{}msx, $options{'nscapassword'}) : ();
+
+        # Convert the byte stream into an array for manipulation
+        my @byte_stream = split m{}msx, $str;
+
+        foreach my $byte_index (0..$#byte_stream) {
+                # Foreach byte in the byte stream, XOR the byte with the IV
+                $byte_stream[$byte_index] ^= $byte_iv[$byte_index % scalar @byte_iv];
+
+                if ($options{'nscapassword'}) {
+                        # If there is a password, XOR the byte with the password
+                        $byte_stream[$byte_index] ^= $byte_password[$byte_index % scalar @byte_password];
+                }
+        }
+
+        # Return the manipulated byte stream
+        return join q{}, @byte_stream;
+
+}
+
+# build the crc table - must be called before calculating the crc value 
+sub generate_crc32_table {
+	my ($crc, $poly, $i, $j);
+
+	$poly = 0xEDB88320;
+	for($i = 0; $i < 256; $i++) {
+		$crc = $i;
+		for($j = 8; $j > 0; $j--) {
+			if ($crc & 1) {
+				$crc = ($crc >> 1) ^ $poly;
+			} else {
+				$crc >>= 1;
+			}
+		}
+		$crc32_table[$i] = $crc;
+	}
+
+	return;
+}
+
+# calculates the CRC 32 value for a buffer
+sub calculate_crc32 {
+	my ($buffer) = @_;
+	my ($crc, $this_char, $current_index);
+
+	$crc = 0xFFFFFFFF;
+
+	for($current_index = 0; $current_index < length($buffer); $current_index++) {
+		$this_char = ord(substr($buffer, $current_index, 1));
+		$crc = (($crc >> 8) & 0x00FFFFFF) ^ $crc32_table[($crc ^ $this_char) & 0xFF];
+	}
+
+	return ($crc ^ 0xFFFFFFFF);
+}
+
+sub handle_sendnsca {
+	my ($L, $M, $msg) = @_;
+
+	$msg = format_unescape($L, $M, 'sendnsca', $msg);
+	my ($nagiosserver,$hostname,$service,$return_code,$statustext)=split(/\|\|/,$msg);
+	sendnsca($nagiosserver,$hostname,$service,$return_code,$statustext);
+}
+
+sub handle_sendnsca_oncepermatch {
+	my ($L, $M, $msg) = @_;
+
+	$msg = format_unescape($L, $M, 'sendnsca', $msg);
+	my ($nagiosserver,$hostname,$service,$return_code,$statustext)=split(/\|\|/,$msg);
+	if (!defined($nsca_sent_for_host{$hostname})) {
+		sendnsca($nagiosserver,$hostname,$service,$return_code,$statustext);
+		$nsca_sent_for_host{$hostname}=1;
+	}
+}
+
+sub sendnsca {	# private
+	my ($nagiosserver,$hostname,$service,$return_code,$statustext)=@_;
+	# escape possible backslashes
+	$statustext=~s/\\/\//g;
+	# some checks
+	if ($nagiosserver eq '' || $hostname eq '' || $service eq ''
+			|| $return_code eq '' || $statustext eq '') { 
+		tracer("sendnsca","Invalid input line");
+		return;
+	}
+
+	my ($sock, $xor_key, $timestamp);
+	my $packet_version = "3";
+	my $failure = "Could not establish a connection to $nagiosserver! Are you an allowed_host?\n";
+
+	# Open the socket
+	$sock = IO::Socket::INET->new(PeerAddr => $nagiosserver,
+			PeerPort => $options{'nscaport'},
+			Timeout => 3,
+			Proto => 'tcp');
+	if(!$sock) { print $failure; return; }
+
+	# Get 128bit xor key and 4bit timestamp.
+	if (!read($sock,$xor_key,128)) { print $failure; shutdown($sock,2); return;}
+	if (!read($sock,$timestamp, 4)) { print $failure; shutdown($sock,2); return;}
+
+	# Generate the crc table. This will be used to sign the packet.
+	# We ported the code for this from the nsca_send.c file
+	#	generate_crc32_table();
+	# we don't do this here every time, do this once globally
+
+	# Reset the crc value
+	my $crc = "0";
+
+	# Build our packet.
+	my $tobecrced = pack("nxx N a4 n a64 a128 a512xx",
+			$packet_version, $crc, $timestamp, $return_code, $hostname, $service, $statustext);
+
+	# Get a signature for the packet.
+	$crc = calculate_crc32($tobecrced);
+
+	# Build the final packet with the sig.
+	my $str = pack("nxx N a4 n a64 a128 a512xx",
+			$packet_version, $crc, $timestamp, $return_code, $hostname, $service, $statustext);
+
+	# Xor the sucker.
+	my $string_to_send = myxor($xor_key, $str);
+
+	# Spank it...
+	if (send($sock,$string_to_send,0)) { 
+		tracer("sendnsca","Sent $return_code, $hostname, $service, $statustext to $nagiosserver");
+	} else {
+		tracer("sendnsca","Could not send packet to $nagiosserver");
+	} 
+
+	# Goodbye
+	shutdown($sock,2);
+}
+
+# ----------------------------------------------------------------------------
+#
+# set all to 0 if just scanning once so we read the whole file
+#
+sub set_handle_sizes {
+	my $first_time_init=$_[0];
+	my %tmp_last_sizes;
+	my $n;
+	my ($s, $h);
+	while (($s,$h) = each %handles) {
+		if ($options{'count'} == 1) {
+			$n = 0;
+		} elsif ($first_time_init &&
+				$options{'include_old_lines'} == 1) {
+			$n = 0;
+			$options{'include_old_lines'}=0;
+		} else {
+			seek($h, 0, 2);
+			$n = tell $h;
+		}
+		if ($first_time_init) {
+			$tmp_last_sizes{$s} = $n;
+		} elsif (!defined ($last_sizes{$s})) {
+			# this is the case for a run where originally, this file wasn't present
+			# but now it is, so we will check this file from the beginning
+			$tmp_last_sizes{$s} = 0;
+		} else {
+			$tmp_last_sizes{$s} = $last_sizes{$s};
+		}
+		tracer("size $s => $n");
+		if ($options{'close_and_reopen'} == 1) {
+			delete($handles{$s});
+		}
+	}
+	%last_sizes=();
+	%last_sizes=%tmp_last_sizes;
+	%tmp_last_sizes=();
+	#return(%tmp_last_sizes);
+}
+
+# ----------------------------------------------------------------------------
+
+sub init_signals {
+	if (!$system_is_windows) {
+		$SIG{HUP}  = 'reread_config';
+	}
+	$SIG{INT}  = 'ctrl_c_exit';
+	$SIG{TERM} = 'ctrl_c_exit';
+	$SIG{CHLD} = sub { wait };
+	tracer("signal handlers");
+}
+
+sub daemonise {
+	if (!$options{debug}) {
+		close STDIN;  open(STDIN,"</dev/null");
+		close STDOUT; open(STDOUT,">/dev/null");
+		close STDERR; open(STDERR,">/dev/null");
+	}
+	my $pid = fork();
+	if (! defined $pid) {			  # error
+		tracer("fork() error");
+		die "$prog: fatal identity crisis (uid $<)\n";
+	}
+
+	exit 0 if $pid > 0;				  # parent exit
+	tracer("child", "fork() -> $$");			  # child reports self
+}
+
+sub reread_config {
+	my $sig = shift;
+	warn "\n$prog: signal SIG$sig, rereading config...\n";
+	#init_runtime();
+	$hup_received=1;
+}
+
+sub ctrl_c_exit {
+	my $sig = shift;
+	warn "\n$prog: signal SIG$sig, exit...\n";
+	clean_exit();
+}
+
+sub clean_exit {
+	reap_children();
+        unlink($options{pidfile}) if ($options{pidfile});
+	exit 0;
+}
+
+sub reap_children {
+	for (keys %children) {
+		kill TERM => $_;
+		tracer("reap $_");
+	}
+}
+
+# ----------------------------------------------------------------------------
+
+# init parser state
+sub init_state {
+#    foreach my $fh (keys %handles) {
+#       undef($handles{$fh});
+#       delete($handles{$fh});
+#    }
+#    %handles      = ();
+	foreach my $tmp_source (keys %actions) {
+		foreach my $pat (@{$actions{$tmp_source}{'patorder'}}) {
+			#undef($actions{$tmp_source}{$pat});
+			delete($actions{$tmp_source}{$pat});
+		}
+			#undef($actions{$tmp_source}{'patorder'});
+		delete($actions{$tmp_source}{'patorder'});
+		#undef($actions{$tmp_source});
+		delete($actions{$tmp_source});
+	}
+	%actions      = ();
+	@SOURCES      = ();
+	%children     = ();
+	%exec_counter = ();
+	%custom_variables = ();
+	%global_formats   = ();
+	%fromtypes	  = ();
+#    %last_sizes	  = ();
+	foreach my $key1 (keys %formats) {
+		foreach my $key2 (keys %{$formats{$key1}}) {
+			#undef($formats{$key1}{$key2});
+			delete($formats{$key1}{$key2});
+		}
+		#undef($formats{$key1});
+		delete($formats{$key1});
+	}
+	%formats	  = ();
+	%nsca_sent_for_host=();
+	%exec_done_for_host=();
+}
+
+# ----------------------------------------------------------------------------
+
+sub init_runtime {
+	my $first_time_init=$_[0];
+	tracer("$VERSION initialising runtime");
+	reap_children();
+	init_state();
+	init_user();
+	# we initialise options before we read the config, because some config
+	# handling need the default values if they are not specifically set in the config
+	init_options();
+	read_config();
+	get_commandline_options();
+	sanitise_options();
+	#%last_sizes=();
+	#%last_sizes=set_handle_sizes($first_time_init);
+	set_handle_sizes($first_time_init);
+	init_signals();
+}
+
+# ----------------------------------------------------------------------------
+
+sub init_user {
+	# set up environment
+	if ($system_is_windows) {
+		($username, $homedir) = ("Administrator","C:");
+	} else {
+		($username, $homedir) = getuserinfo($<);
+	}
+	die "$prog: fatal identity crisis (uid $<)\n" if ! $username;
+}
+
+# ----------------------------------------------------------------------------
+
+sub init_options {
+	$options{'lsprog'} = $def_lsprog;
+	$options{'syslogfacility'} = $def_syslogfacility;
+	$options{'syslogpriority'} = $def_syslogpriority;
+	$options{'mailmethod'} = $def_mailmethod;
+	$options{'mailserver'} = $def_mailserver;
+	$options{'poll'} = $def_poll;
+	$options{'count'} = $def_count;
+	$options{'restartinterval'} = $def_restartinterval;
+	$options{'logisaliveinterval'} = $def_logisaliveinterval;
+	$options{'isalivelog'} = $def_isalivelog;
+	$options{'nscapassword'} = $def_nscapassword;
+	$options{'nscaport'} = $def_nscaport;
+	$options{'pidfile'} = $def_pidfile;
+	# we set the close_and_reopen option here, so the user can override
+	# in the config file if wanted
+	if ($system_is_windows==1) {
+		$options{'close_and_reopen'} = "on";
+	} else {
+		$options{'close_and_reopen'} = "off";
+	}
+}
+
+sub sanitise_options {
+	on_off_canonify("debug");
+	tracer("settings");
+	# do we nice ourselves?
+	POSIX::nice($options{'nice'}) if $options{'nice'};
+	# sanitise option settings
+	$options{'poll'} = 1 if $options{'poll'} < 1;
+	$options{'restartinterval'} = 1000 if ($options{'restartinterval'} < 1000 && $options{'restartinterval'}!=0);
+	$options{'logisaliveinterval'} = 0 if $options{'logisaliveinterval'} <0;
+
+	on_off_canonify("daemon");
+	if ($system_is_windows==1) {
+		$options{'daemon'} = 0;
+		$options{'restartinterval'} = 0;
+	};
+	on_off_canonify("close_and_reopen");
+	on_off_canonify("include_old_lines");
+
+	# some defaults to echo output (override in config file)
+	$global_formats{'echo'} = "~L:~M";
+	$global_formats{'exec'} = "~L:~M";
+	$global_formats{'mail'} = "~M";
+	$global_formats{'syslog'} = "~M";
+}
+
+sub on_off_canonify {
+	my $var_name=$_[0];
+	if (defined($options{$var_name})) {
+		# if it is a number, leave it alone
+		# otherwise translate the empty string, "yes" and "on" to 1
+		#  and all the rest to 0
+		if ($options{$var_name} !~ /^\d+$/) {
+			if ($options{$var_name} eq "" ||
+				 $options{$var_name} eq "yes" ||
+				 $options{$var_name} eq "on") {
+				$options{$var_name} = 1;
+			} else {
+				$options{$var_name} = 0;
+			}
+		}
+	} else {
+		$options{$var_name} = 0;
+	}
+}
+
+# ----------------------------------------------------------------------------
+
+sub read_config {
+	my $path_separator='/';
+	if ($system_is_windows) {
+		$path_separator='\\';
+	}
+	# config files from command line, or home dir
+	if (!defined($commandline_options{'config'}) || $commandline_options{'config'} eq "") {
+		print "Please use the --config option to specify the config file\n";
+		usage();
+	}
+	my $wots_cfg = $commandline_options{'config'};
+        my $cfg_dir = dirname($wots_cfg).$path_separator."wots.d";
+        if ( -f $wots_cfg && -d $cfg_dir) {
+		open(CFG, "cat $wots_cfg $cfg_dir/* 2>/dev/null|") or die "$prog: can't open configuration file '$wots_cfg'\n";
+	} else {
+		open(CFG, "< $wots_cfg") or die "$prog: can't open configuration file '$wots_cfg'\n";
+	}
+
+	if (defined($commandline_options{'debug'}) && $commandline_options{'debug'}) {
+		tracer("read", $wots_cfg);
+	}
+
+	my $line = 0;
+	my $outside_from = 1;			  # initially global scope
+	my $skip_to_next_from = 0;
+	my $source;
+
+	while (<CFG>) {
+		++$line;
+		chomp;
+		s/\#.*//; s/^\s+//; s/\s+$//;		  # tidy input
+		next if $_ eq "";
+
+		if (m%^(config|set)\s+(\S+)\s+(.+)%) {
+			$options{$2} = $3;
+			tracer("$2 = $3");
+			next;
+		}
+
+		if (m%^(variable)\s+(\S+)\s+(.+)%) {
+			$custom_variables{$2} = $3;
+			tracer("$2 = $3");
+			next;
+		}
+
+		if (m%^from\s+(.+)%i) {			  # new source
+			$outside_from = 0;
+			$source = $1;
+			if ($source =~ /^(pipe|once)/) {    # command to run
+				my $style = $1;
+				$source =~ s/^$style\s+//;
+				# see if we run it again and again...
+				$fromtypes{$source} = ($style eq "once") ? "once" : "cmd";
+				push(@SOURCES, "$source");	  # keeps them in order
+					next;
+			} else {				  # file to watch
+				# windows has no /dev/null
+				if (!$system_is_windows) {
+					open (PROG,"$options{lsprog} $source 2>/dev/null|");
+				} else {
+					open (PROG,"$options{lsprog} $source |");
+				}
+				my $source_found=0;
+				my $tmp_source;
+				while($tmp_source=<PROG>) {
+					$source_found=1;
+					chomp($tmp_source);
+					$fromtypes{$tmp_source} = 'file';
+					my $fh = new IO::File "< $tmp_source";
+					#my $fh = new IO::File "$tmp_source", O_RDONLY|O_NONBLOCK;
+					if (defined $fh) {
+						push(@SOURCES, "$tmp_source");	  # keeps them in order
+						$handles{$tmp_source} = $fh;
+						$skip_to_next_from = 0;
+					}
+				}
+				close PROG;
+				if ($source_found==0) {
+					parse_warning($wots_cfg, $line, $_,
+							"can't read \'$source', skipping any patterns");
+					$outside_from = 1;
+					$skip_to_next_from = 1;
+				}
+				next;
+			}
+		}
+		if ($outside_from) {
+			if (m%^(echo|exec|mail)format\s+(.+)%i) {  # global format to echo|mail
+				my ($t, $f) = ($1, $2);
+				$global_formats{$t} = $f;
+				$global_formats{$t} =~ s/^([\"\'])(.*)\1$/$2/;
+				undef($t);
+				undef($f);
+				next;
+			}
+		} else {
+			# windows has no /dev/null
+			if (!$system_is_windows) {
+				open (PROG,"$options{lsprog} $source 2>/dev/null|");
+			} else {
+				open (PROG,"$options{lsprog} $source |");
+			}
+			while(my $tmp_source=<PROG>) {
+				chomp($tmp_source);
+				if (m%^(echo|exec|mail)format\s+(.+)%i) {  # local format to echo|mail
+					my ($t, $f) = ($1, $2);
+					$formats{$t}{$tmp_source} = $f;
+					$formats{$t}{$tmp_source} =~ s/^([\"\'])(.*)\1$/$2/;
+					undef($t);
+					undef($f);
+				} elsif (m%^/(.+)/\s+(.+)%) {		  # pattern + action
+					my ($pat, $act) = ($1, $2);
+					# test it
+					my $trap = eval qq( "dummy" =~ /$pat/ );
+					if (! defined $trap) {
+						parse_warning($wots_cfg, $line, $_,
+								"broken regexp, ignoring...");
+					} else {
+						# save each pattern/action and the order
+						push(@{$actions{$tmp_source}{'patorder'}}, $pat);
+						push(@{$actions{$tmp_source}{$pat}}, $act);
+					}
+					undef($trap);
+				}
+			}
+			close(PROG);
+			next;
+		}
+		next if $skip_to_next_from;
+		parse_warning($wots_cfg, $line, $_,
+				"unknown syntax, ignoring...");
+	}
+	close CFG;
+}
+
+sub get_commandline_options {
+	# override some options via commandline
+	my @loc_options=('debug','count','daemon','pidfile','include_old_lines');
+	for my $loc_option (@loc_options) {
+		if (defined($commandline_options{$loc_option})) {
+			$options{$loc_option}=$commandline_options{$loc_option};
+		}
+	}
+}
+
+sub parse_warning {
+	my ($I, $L, $T, $M) = @_;
+	warn "$I:$L:$T\n";
+	warn "$I:$L:  $M\n";
+}
+
+# ----------------------------------------------------------------------------
+
+sub getuserinfo {
+	my ($user) = @_;
+	if ($user =~ /\D/) {
+		getuserbyname($user);
+	} else {
+		getuserbyuid($user);
+	}
+}
+sub getuserbyname {                               # private
+	my ($user) = @_;
+	my @pw = getpwnam($user);
+	return undef if $#pw < 0;
+	getuserinternal(@pw);
+}
+sub getuserbyuid {                                # private
+	my ($user) = @_;
+	my @pw = getpwuid($user);
+	return undef if $#pw < 0;
+	getuserinternal(@pw);
+}
+sub getuserinternal {
+	tracer("user $_[0] homedir $_[7]");
+	($_[0], $_[7]);
+}
+
+# ----------------------------------------------------------------------------
+
+sub tracer {
+	return if (!defined($options{'debug'}) || !$options{'debug'} || $options{'debug'} eq "off");
+	my @info = caller(1);
+	my $subr = $info[3];
+	warn "$prog:$subr: @_\n";
+}
+
+# ----------------------------------------------------------------------------
+
+sub usage {
+	print "Usage: $prog [options]
+		($prog uses the GNU extended POSIX option format)
+
+	--config=FILE     read configuration from FILE (default: /etc/wotsrc)
+                          Also files residing in /etc/wots.d (or wherever wotsrc is located) are included
+	--count=N         scan files N times
+                          (default: forever)
+	--debug[=on|off]  show copious debugging info
+                          (default: off, also available as config option)
+	--daemon=[=on|off] put self into background on *nix systems
+                          (default: on, also available as config option)
+	--include_old_lines[=on|off]	Include/check original file
+					contents once as well
+	--pidfile         where to save the pid
+	--help            this option summary
+	--version         show current version and exit
+
+	Read the README file!!!
+
+	This is $prog $VERSION
+	\n";
+	exit(1);
+}

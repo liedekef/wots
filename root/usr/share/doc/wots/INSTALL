@@ -1,0 +1,61 @@
+Welcome to WOTS
+===============
+WOTS is an easily configurable, flexible and hopefully useful logfile
+monitoring tool.  If you know `swatch', it isn't all that different in
+concept, except that it does quite a bit more, and will do even more
+in the future.
+
+Getting WOTS
+============
+Well, you already have it , but in case you can't remember some time in
+the dim distant future, the locations is:
+
+   http://www.e-dynamics.be/wots
+
+The original version (courtesy of Tony Curtis) could be found at:
+    http://www.hpcc.uh.edu/~tonyc/tools/
+but that no longer exists.
+
+Building WOTS
+=============
+Nothing to do.
+All of WOTS is in perl (of course :-).  You need perl version 5,
+preferably 5.00404 or better.
+
+WOTS uses the modules
+    Term::ANSIColor (not required, see file 'wots' itself for this)
+and
+    Mail::Send (not required, see file 'wots' itself for this)
+and (required)
+    Getopt::Long
+    POSIX
+    IO::File
+    IO::Socket
+    Net::Domain
+    Sys::Syslog
+
+You can get them from CPAN (the required modules are standard in perl).
+
+If you want the features they offer (highlighted 'echo' and
+'mail', uncomment the relevant 'use' lines in the perl script 'wots').
+
+Good luck,
+
+Tony Curtis 1997, 1998
+Franky Van Liedekerke 2004-2019
+
+Installing WOTS
+===============
+Manual:
+Just copy the wots.pl and the wotsrc (config file) to a place of your liking.
+For convenience, a init script wots.initd and systemd worts.service is provided.
+Change in that file the location of wots and the config file, place it in
+/etc/init.d and activate it using chkconfig or something similar.
+
+USING WOTS
+==========
+See the README file for this.
+
+RUNNING AS WINDOWS SERVICE
+==========================
+This will be native in wots in the future, but for now: read the TODO file.

@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# WOTS boot startup script
+#
+# chkconfig:   35 90 10
+# description: start the WOTS logfile monitoring perl daemon
+# processname: wots.pl
+#
+### BEGIN INIT INFO
+# Provides: wots
+# Required-Start: $local_fs $network
+# Required-Stop: $local_fs $network
+# Should-Start: $local_fs $network
+# Should-Stop: $local_fs $network
+# Default-Start: 35
+# Default-Stop: 0 1 2 4 6
+# Short-Description: WOTS logfile monitoring perl daemon
+# Description: WOTS logfile monitoring perl daemon
+### END INIT INFO
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+# Location of wots.pl, the pid file and the config
+WOTS=/usr/sbin/wots
+PIDFILE=/var/run/wots.pid
+CONFFILE=/etc/wotsrc
+
+[ -x $WOTS ] || exit 0
+
+# See how we were called.
+case "$1" in
+  start)
+	echo -n "Starting WOTS logfile monitoring daemon: "
+	daemon --pidfile $PIDFILE $WOTS --config=$CONFFILE --daemon=on --debug=off --pidfile=$PIDFILE
+	RETVAL=$?
+	echo
+	;;
+  stop)
+	echo -n "Stopping WOTS logfile monitoring daemon: "
+	killproc -p $PIDFILE $WOTS
+	rm -f $PIDFILE
+	RETVAL=$?
+	echo
+	;;
+  status)
+	status -p $PIDFILE $WOTS
+	RETVAL=$?
+	;;
+  restart)
+	$0 stop
+	$0 start
+	RETVAL=$?
+	;;
+  reload)
+	killproc -p $PIDFILE $WOTS -1
+	RETVAL=$?
+	echo
+	;;
+  *)
+	echo "Usage: clamd {start|stop|status|restart|reload}"
+	exit 1
+esac
+
+exit $RETVAL
+

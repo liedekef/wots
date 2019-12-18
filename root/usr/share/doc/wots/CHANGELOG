@@ -1,0 +1,110 @@
+History of WOTS
+===============
+
+2.8 - add ~FQDN as default variable to get a host fqdn
+
+2.7 - allow escaped forward slashes in the perl regex too
+    - action "echo=x y z" now echoes "x y z" too
+
+2.6 - renamed exec_onceperclient to exec_oncepermatch
+    - renamed handle_sendnsca_onceperclient to handle_sendnsca_oncepermatch
+    #- added exec_once_report_doubles: will do the exec once and at the end of
+    #  each run do the exec again on a summary of matched lines found (reporting
+    #  the count: "Multiple occurences ($count) of '$match' found"
+    #- added echo_once_report_doubles and syslog_once_report_doubles too
+
+2.5 - implemented exec_onceperclient and handle_sendnsca_onceperclient
+      So it executes a script or sends nsca only once per polling period for each
+      host matched. Examples can be found in wotsrc.sample
+
+2.4 - make automatic restarts work again
+    - clean up pid after restart
+
+2.3 - Update so send_nsca works with nagios 3, introducing a new config parameter
+      'nscapassword' for this (see wotsrc.sampe for usage)
+    - new config parameter 'nscaport', defaults to 5667
+    - new handler "sendnsca_onceperclient": sends only one message for each client
+      to a nsca server. Ideal for logs that contain info on many servers and you 
+      want the error to arrive at each server seperately in nagios, but you also
+      only want one message per run to be sent (so you don't get a flood of nsca
+      messages). Practial usage: samhain yule log, and each server in nagios has
+      a passive service called e.g. "integrity status"
+
+2.2 - Now we use IO::File by default, and the getpos problem is worked around,
+      so no need for nogetpos anymore
+    - The location of the config file now needs to be given on the cli
+    - Added an option "isalivelog" (see README)
+    - Added options "mailserver" and "mailmethod" (see README)
+    - Added cli option "include_old_lines" (see README)
+    - Updated the wotrc.sample file
+    - Removed the Makefile, otherwise problems on windows
+    - Using seek and tell instead of getpos/setpos (they are buggy)
+    - In the past, monitored files were kept open, but this resulted in locked
+      files on windows. Now the logfiles are by default closed/reopened on
+      windows (option "close_and_reopen" can be set, see README)
+    - Added a perl-handler to send nsca messages to a nagios server (instead
+      of needing an external program for this). See README.
+    - Memory usage improvements. There are still some leaks, but very hard
+      to track down ...
+
+2.1 Added a "nogetpos" option (see the wotsrc example, for when getpos doesn't
+    work well in the perl module FileHandle or IO::File)
+    Added wots.in.IO_File, where we use IO::File instead of Filehandle
+
+2.0 (Franky's version)
+    Many new options:
+	- variable pathfile names (see example wotsrc file)
+	- continue, ignore, ignore_rest_file, syslog options (see example wotsrc file)
+	- restart the daemon after a certain amount of passes (to prevent
+	  memory leaks from accumulating)
+
+1.22:
+    changed the configuration a bit.  Now we edit Make.config
+    to set up location of interpreters etc.  Then "make"
+    will actually configure things, and "make install" as
+    before (prompted by comments from Martin Paul -- easier
+    to let the user tell us where things).
+
+1.21:
+    maintenance update
+
+1.20:
+
+    changed to Term::ANSIColor module for highlighting.
+    experimental ~L, ~M matching in exec command.
+
+1.19:
+
+    rewrote backreference handler for partial pattern
+    matches
+
+1.18:
+
+    minor bug fixes
+
+1.17:
+
+    added a "once" option to "!", so that e.g.
+    ping checks don't bombard you with mail if
+    a host is unreachable for a long time.
+
+1.16:
+
+    Tidied up some perl strict and -w slackness.
+
+    --version just gives version and dies.
+
+    Running fine with perl5.00404.
+
+1.15:
+
+    removed a bug which manifests itself at eof() on FreeBSD
+
+1.14:
+
+    Added ! to From lines to indicate a command to be run,
+    stdio is piped into the pattern checker.
+
+1.13:
+
+    Upgraded to perl5.00402 - made necessary changes
