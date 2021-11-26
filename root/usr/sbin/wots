@@ -654,7 +654,6 @@ sub set_handle_sizes {
 		} elsif ($first_time_init &&
 				$options{'include_old_lines'} == 1) {
 			$n = 0;
-			$options{'include_old_lines'}=0;
 		} else {
 			seek($h, 0, 2);
 			$n = tell $h;
@@ -673,6 +672,7 @@ sub set_handle_sizes {
 			delete($handles{$s});
 		}
 	}
+	$options{'include_old_lines'}=0;
 	%last_sizes=();
 	%last_sizes=%tmp_last_sizes;
 	%tmp_last_sizes=();
