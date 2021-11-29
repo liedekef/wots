@@ -169,6 +169,16 @@
 # See the file wotsrc.sample for example usages of these
 #
 #==============================================================================
+# OUTPUT FORMAT (for some actions)
+#
+# For the actions echo, mail, syslog you can influence the format of the output by specifying the setting "echoformat", "mailformat" or "syslogformat" either globally or per from-entry
+# The defaults are:
+#
+# echoformat ~L:~M
+# mailformat ~M
+# syslogformat ~M
+#
+#==============================================================================
 #
 # BEHAVIOR CHANGING
 #
