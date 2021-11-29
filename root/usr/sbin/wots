@@ -115,8 +115,8 @@ my @SOURCES;
 my %children;
 my %global_formats;
 my %custom_variables;
-my %nsca_sent_for_host;
-my %exec_done_for_host;
+my %nsca_sent_for_match;
+my %exec_done_for_match;
 
 my ($username, $homedir);
 
@@ -224,10 +224,10 @@ sub poller {
 		sleep $options{'poll'};
 
 		# now reset any variables that need to be empty for each run
-		tracer("resetting nsca_sent_for_host");
-		%nsca_sent_for_host=();
-		tracer("resetting exec_done_for_host");
-		%exec_done_for_host=();
+		tracer("resetting nsca_sent_for_match");
+		%nsca_sent_for_match=();
+		tracer("resetting exec_done_for_match");
+		%exec_done_for_match=();
 
 		--$options{'count'} unless $options{'count'} <= 0;
 	}
@@ -376,13 +376,13 @@ sub handle_ignore {
 
 sub handle_exec_oncepermatch {
 	my ($L, $M, $cmd) = @_;
-	my ($hostname,$restcmd)=split(/\|\|/,$cmd);
-        if (!defined($restcmd) || $hostname eq "" || $restcmd eq "") {
-		warn "$prog: exec_oncepermatch definition failure, please use the syntax <HOSTNAME>||<COMMAND>\n";
+	my ($match,$restcmd)=split(/\|\|/,$cmd);
+        if (!defined($restcmd) || $match eq "" || $restcmd eq "") {
+		warn "$prog: exec_oncepermatch definition failure, please use the syntax <MATCH>||<COMMAND>\n";
         } else {
-		if (!defined($exec_done_for_host{$hostname})) {
+		if (!defined($exec_done_for_match{$match})) {
 			handle_exec($L,$M,$restcmd);
-			$exec_done_for_host{$hostname}=1;
+			$exec_done_for_match{$match}=1;
 		}
 	}
 }
@@ -573,10 +573,13 @@ sub handle_sendnsca_oncepermatch {
 	my ($L, $M, $msg) = @_;
 
 	$msg = format_unescape($L, $M, 'sendnsca', $msg);
-	my ($nagiosserver,$hostname,$service,$return_code,$statustext)=split(/\|\|/,$msg);
-	if (!defined($nsca_sent_for_host{$hostname})) {
+	my ($match,$nagiosserver,$hostname,$service,$return_code,$statustext)=split(/\|\|/,$msg);
+        if (!defined($statustext) || $match eq "" || $statustext eq "") {
+		warn "$prog: sendnsca_oncepermatch definition failure, please use the syntax <MATCH>||<NAGIOSSERVER||HOSTNAME in nagios||SERVICE in nagios||return code in nagios||statustext in nagios>\n";
+	}
+	if (!defined($nsca_sent_for_match{$match})) {
 		sendnsca($nagiosserver,$hostname,$service,$return_code,$statustext);
-		$nsca_sent_for_host{$hostname}=1;
+		$nsca_sent_for_match{$match}=1;
 	}
 }
 
@@ -769,8 +772,8 @@ sub init_state {
 		delete($formats{$key1});
 	}
 	%formats	  = ();
-	%nsca_sent_for_host=();
-	%exec_done_for_host=();
+	%nsca_sent_for_match=();
+	%exec_done_for_match=();
 }
 
 # ----------------------------------------------------------------------------
@@ -1090,3 +1093,4 @@ sub usage {
 	\n";
 	exit(1);
 }
+
