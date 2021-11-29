@@ -141,13 +141,31 @@
 # ACTIONS TO A FOUND PATTERN
 #
 # a found pattern needs an action, possible actions are:
+# echo
+#     Syntax: echo
+#     Will echo each filename and logline matched to stdout, only really usefull in debug
+# bell
+#     Will make a sound for filename and logline matched, only really usefull in debug
 # syslog
+#     Syntax: syslog
+#     Will log the file and logline matched into syslog with syslogfacility and syslogpriority defined in the generic options
 # mail
+#     Syntax: exec_oncepermatch=<EMAIL>
+#     Will send a mail with the filename and logline matched
 # exec
+#     Syntax: exec=<CMD>
+#     Will execute the defined command for each match
+#     CMD can contain variables like ~L, ~M, own defined variables etc ...
 # exec_oncepermatch
+#     Syntax: exec_oncepermatch=<MATCH>||<CMD>
+#     Will execute the defined command only once for each match
+#     The text before the "||" will be used as "match uniqueness" (can contain back references, variables)
 # sendnsca
+#     Syntax: sendnsca_oncepermatch=<NAGIOSSERVER||HOSTNAME in nagios||SERVICE in nagios||return code in nagios||statustext in nagios>
 # sendnsca_oncepermatch
-# ignore
+#     Syntax: sendnsca_oncepermatch=<MATCH>||<NAGIOSSERVER||HOSTNAME in nagios||SERVICE in nagios||return code in nagios||statustext in nagios>
+#     The text before the first "||" will be used as "match uniqueness" (can contain back references, variables)
+#
 # See the file wotsrc.sample for example usages of these
 #
 #==============================================================================
