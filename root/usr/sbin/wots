@@ -890,9 +890,9 @@ sub read_config {
 	my $wots_cfg = $commandline_options{'config'};
         my $cfg_dir = dirname($wots_cfg).$path_separator."wots.d";
         if ( -f $wots_cfg && -d $cfg_dir) {
-		open(CFG, "cat $wots_cfg $cfg_dir/* 2>/dev/null|") or die "$prog: can't open configuration file '$wots_cfg'\n";
+		open(CFG, "cat $wots_cfg $cfg_dir/* 2>/dev/null|") or die "$prog: can't open configuration file '$wots_cfg' nor files in '$cfg_dir'\n";
 	} else {
-		open(CFG, "< $wots_cfg") or die "$prog: can't open configuration file '$wots_cfg'\n";
+		open(CFG, "< $wots_cfg") or die "$prog: can't open configuration file '$wots_cfg' nor files in '$cfg_dir'\n";
 	}
 
 	if (defined($commandline_options{'debug'}) && $commandline_options{'debug'}) {
