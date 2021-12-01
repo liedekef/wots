@@ -21,7 +21,7 @@ use IO::File;					  # stream flushing
 use IO::Socket;
 use Sys::Syslog;
 use Net::Domain qw(hostname hostfqdn hostdomain domainname);
-#use Data::Dumper;
+use Data::Dumper;
 
 # comment out the next lines if you don't have/want fancy echo or mail.
 # use Mail::Send;
@@ -124,11 +124,6 @@ my $fqdn = hostfqdn();
 
 # set things up initially
 init_runtime(1);
-
-# remove the isalivelog, restart from the beginning
-if ($options{'isalivelog'} ne "NONE" && -f $options{'isalivelog'}) {
-	unlink($options{'isalivelog'});
-}
 
 if (!$system_is_windows) {
 	daemonise() if $options{'daemon'}==1;
@@ -245,8 +240,8 @@ sub check_a_source {
 		# return if eof $handles{$from};
 		my $old_size = $last_sizes{$from};
 		if (-f $from) {
-			my $t_handle= new IO::File "$from";
-			#my $t_handle= new IO::File "$from", O_RDONLY|O_NONBLOCK;
+			my $t_handle= new IO::File "< $from";
+			#my $t_handle= new IO::File "< $from", O_RDONLY|O_NONBLOCK;
 			my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($t_handle);
 			#my $now=time();
 			#if ($size<$old_size || ($size==$old_size && $now-$mtime<$options{'poll'})) 
@@ -259,8 +254,10 @@ sub check_a_source {
 				}
 			} else {
 				if ($size>=$old_size) {
+					$t_handle->close;
 					undef($t_handle);
 				} else {
+					$handles{$from}->close;
 					delete($handles{$from});
 					$handles{$from} = $t_handle;
 				}
@@ -277,6 +274,7 @@ sub check_a_source {
 			$last_sizes{$from} = $new_size;
 			tracer("newsize", $new_size);
 			if ($options{'close_and_reopen'}==1) {
+				$handles{$from}->close;
 				delete($handles{$from});
 			}
 		}
@@ -831,6 +829,10 @@ sub init_options {
 	} else {
 		$options{'close_and_reopen'} = "off";
 	}
+	# remove the isalivelog, restart from the beginning
+	if ($options{'isalivelog'} ne "NONE" && -f $options{'isalivelog'}) {
+		unlink($options{'isalivelog'});
+	}
 }
 
 sub sanitise_options {
@@ -949,7 +951,6 @@ sub read_config {
 					chomp($tmp_source);
 					$fromtypes{$tmp_source} = 'file';
 					my $fh = new IO::File "< $tmp_source";
-					#my $fh = new IO::File "$tmp_source", O_RDONLY|O_NONBLOCK;
 					if (defined $fh) {
 						push(@SOURCES, "$tmp_source");	  # keeps them in order
 						$handles{$tmp_source} = $fh;
@@ -967,7 +968,7 @@ sub read_config {
 			}
 		}
 		if ($outside_from) {
-			if (m%^(echo|exec|mail)format\s+(.+)%i) {  # global format to echo|mail
+			if (m%^(echo|mail|syslog)format\s+(.+)%i) {  # global format to echo|mail|syslog
 				my ($t, $f) = ($1, $2);
 				$global_formats{$t} = $f;
 				$global_formats{$t} =~ s/^([\"\'])(.*)\1$/$2/;
@@ -984,7 +985,7 @@ sub read_config {
 			}
 			while(my $tmp_source=<PROG>) {
 				chomp($tmp_source);
-				if (m%^(echo|exec|mail)format\s+(.+)%i) {  # local format to echo|mail
+				if (m%^(echo|mail|syslog)format\s+(.+)%i) {  # local format to echo|mail|syslog
 					my ($t, $f) = ($1, $2);
 					$formats{$t}{$tmp_source} = $f;
 					$formats{$t}{$tmp_source} =~ s/^([\"\'])(.*)\1$/$2/;
