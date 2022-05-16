@@ -127,6 +127,21 @@ init_runtime(1);
 
 # ----------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+
+if (!$system_is_windows) {
+	daemonise() if $options{'daemon'}==1;
+}
+
+# now that we started, write a new line so it sends an isalive immediately
+if ($options{'isalivelog'} ne "NONE") {
+	my @now = POSIX::localtime(time);
+	my $msg = POSIX::strftime("%Y-%m-%d %H:%M:%S WOTS running ok", @now);
+	open (ISALIVEOUT,">>".$options{'isalivelog'}) || die "You want a isalive log, but I can't write to it ...\n";
+	print ISALIVEOUT "$msg\n";
+	close ISALIVEOUT;
+}
+
 # TODO: check for lock
 if ($options{count} != 1) {
 	my $now = POSIX::strftime("%Y-%m-%d %T", POSIX::localtime(time));
@@ -137,12 +152,6 @@ if ($options{count} != 1) {
 		print OUT $$;
 		close OUT;
 	}
-}
-
-# --------------------------------------------------------------------------
-
-if (!$system_is_windows) {
-	daemonise() if $options{'daemon'}==1;
 }
 
 poller();
@@ -914,7 +923,7 @@ sub read_config {
 			tracer("$2 = $3");
 			if ($first_time_init && $2 eq "isalivelog" && $3 ne "NONE") {
 				my @now = POSIX::localtime(time);
-				my $msg = POSIX::strftime("%Y-%m-%d %H:%M:%S WOTS running ok", @now);
+				my $msg = POSIX::strftime("%Y-%m-%d %H:%M:%S Initial start of WOTS", @now);
 				my $isalivelogfile=$options{'isalivelog'};
 				open (ISALIVEOUT,">>$isalivelogfile") || die "You want a isalive log, but I can't write to it ...\n";
 				print ISALIVEOUT "$msg\n";
