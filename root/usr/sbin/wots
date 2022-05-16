@@ -125,9 +125,6 @@ my $fqdn = hostfqdn();
 # set things up initially
 init_runtime(1);
 
-if (!$system_is_windows) {
-	daemonise() if $options{'daemon'}==1;
-}
 # ----------------------------------------------------------------------------
 
 # TODO: check for lock
@@ -144,14 +141,8 @@ if ($options{count} != 1) {
 
 # --------------------------------------------------------------------------
 
-# we log a isalive line to a file if wanted (see option isalivelog)
-if ($options{'isalivelog'} ne "NONE") {
-	my @now = POSIX::localtime(time);
-	my $msg = POSIX::strftime("%Y-%m-%d %H:%M:%S WOTS running ok", @now);
-	my $isalivelogfile=$options{'isalivelog'};
-	open (ISALIVEOUT,">>$isalivelogfile") || die "You want a isalive log, but I can't write to it ...\n";
-	print ISALIVEOUT "$msg\n";
-	close ISALIVEOUT;
+if (!$system_is_windows) {
+	daemonise() if $options{'daemon'}==1;
 }
 
 poller();
@@ -785,11 +776,12 @@ sub init_runtime {
 	# we initialise options before we read the config, because some config
 	# handling need the default values if they are not specifically set in the config
 	init_options();
-	read_config();
+	read_config($first_time_init);
 	get_commandline_options();
 	sanitise_options();
 	#%last_sizes=();
 	#%last_sizes=set_handle_sizes($first_time_init);
+
 	set_handle_sizes($first_time_init);
 	init_signals();
 }
@@ -883,6 +875,8 @@ sub on_off_canonify {
 # ----------------------------------------------------------------------------
 
 sub read_config {
+	my $first_time_init=$_[0];
+
 	my $path_separator='/';
 	if ($system_is_windows) {
 		$path_separator='\\';
@@ -918,6 +912,14 @@ sub read_config {
 		if (m%^(config|set)\s+(\S+)\s+(.+)%) {
 			$options{$2} = $3;
 			tracer("$2 = $3");
+			if ($first_time_init && $2 eq "isalivelog" && $3 ne "NONE") {
+				my @now = POSIX::localtime(time);
+				my $msg = POSIX::strftime("%Y-%m-%d %H:%M:%S WOTS running ok", @now);
+				my $isalivelogfile=$options{'isalivelog'};
+				open (ISALIVEOUT,">>$isalivelogfile") || die "You want a isalive log, but I can't write to it ...\n";
+				print ISALIVEOUT "$msg\n";
+				close ISALIVEOUT;
+			}
 			next;
 		}
 
